@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pixeles reactivos al micrófono</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      background: black;
+      overflow: hidden;
+      width: 100%; height: 100%;
+    }
+    svg {
+      width: 100%; height: 100%;
+      display: block;
+    }
+    #startButton {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 1.5em;
+      padding: 1em 2em;
+      background: crimson;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <button id="startButton">Iniciar</button>
+  <svg id="canvas">
+    <defs id="defs"></defs>
+  </svg>
+
+  <script>
+    const svg = document.getElementById("canvas");
+    const defs = document.getElementById("defs");
+    const pixels = [];
+    const surfaces = [];
+    const numPixels = 200;
+
+    let audioCtx, analyser, dataArray;
+
+    class Pixel {
+      constructor() {
+        this.size = 4;
+        this.x = Math.random() * window.innerWidth;
+        this.y = Math.random() * window.innerHeight;
+        this.vx = (Math.random() - 0.5) * 2;
+        this.vy = (Math.random() - 0.5) * 2;
+        this.rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        this.rect.setAttribute("width", this.size);
+        this.rect.setAttribute("height", this.size);
+        this.rect.setAttribute("fill", "white");
+        svg.appendChild(this.rect);
+      }
+
+      move(volumeFactor) {
+        this.x += this.vx * volumeFactor;
+        this.y += this.vy * volumeFactor;
+
+        if (this.x <= 0 || this.x + this.size >= window.innerWidth) this.vx *= -1;
+        if (this.y <= 0 || this.y + this.size >= window.innerHeight) this.vy *= -1;
+
+        this.rect.setAttribute("x", this.x);
+        this.rect.setAttribute("y", this.y);
+      }
+
+      checkCollision(other) {
+        if (
+          this.x < other.x + other.size &&
+          this.x + this.size > other.x &&
+          this.y < other.y + other.size &&
+          this.y + this.size > other.y
+        ) {
+          this.vx *= -1; this.vy *= -1;
+          other.vx *= -1; other.vy *= -1;
+
+          if (!surfaces.find(s => (s.a === this && s.b === other) || (s.a === other && s.b === this))) {
+            createSurface(this, other);
+          }
+        }
+      }
+    }
+
+    function createSurface(a, b) {
+      const gradId = `grad${surfaces.length}`;
+      const grad = document.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
+      grad.setAttribute("id", gradId);
+      grad.setAttribute("x1", "0%"); grad.setAttribute("y1", "0%");
+      grad.setAttribute("x2", "100%"); grad.setAttribute("y2", "100%");
+
+      const stop1 = document.createElementNS("http://www.w3.org/2000/svg", "stop");
+      stop1.setAttribute("offset", "0%");
+      stop1.setAttribute("stop-color", "red");
+      stop1.setAttribute("stop-opacity", "0.5");
+
+      const stop2 = document.createElementNS("http://www.w3.org/2000/svg", "stop");
+      stop2.setAttribute("offset", "100%");
+      stop2.setAttribute("stop-color", "black");
+      stop2.setAttribute("stop-opacity", "0.5");
+
+      grad.appendChild(stop1);
+      grad.appendChild(stop2);
+      defs.appendChild(grad);
+
+      const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      polygon.setAttribute("fill", `url(#${gradId})`);
+      svg.appendChild(polygon);
+
+      surfaces.push({ a, b, polygon, stop1 });
+    }
+
+    function updateSurfaces(volumeFactor) {
+      surfaces.forEach(s => {
+        const ax = s.a.x + s.a.size / 2;
+        const ay = s.a.y + s.a.size / 2;
+        const bx = s.b.x + s.b.size / 2;
+        const by = s.b.y + s.b.size / 2;
+        const mx = (ax + bx) / 2;
+        const my = (ay + by) / 2;
+        const angle = Math.atan2(by - ay, bx - ax) + Math.PI / 2;
+        const dist = Math.hypot(bx - ax, by - ay) * 0.5;
+
+        const cx = mx + Math.cos(angle) * dist;
+        const cy = my + Math.sin(angle) * dist;
+
+        s.polygon.setAttribute("points", `${ax},${ay} ${bx},${by} ${cx},${cy}`);
+
+        // Modulación: cambia el color según volumen
+        const colorValue = Math.min(255, Math.floor(volumeFactor * 255));
+        s.stop1.setAttribute("stop-color", `rgb(${colorValue},0,${255 - colorValue})`);
+      });
+    }
+
+    document.getElementById('startButton').addEventListener('click', async () => {
+      document.getElementById('startButton').style.display = 'none';
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        start();
+      } catch(err) {
+        console.error('No se pudo acceder al micrófono', err);
+      }
+    });
+
+    function start() {
+      for (let i = 0; i < numPixels; i++) {
+        pixels.push(new Pixel());
+      }
+      animate();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      analyser.getByteFrequencyData(dataArray);
+      let avg = dataArray.reduce((a,b) => a+b,0) / dataArray.length;
+      let volumeFactor = 0.5 + avg / 512; // entre 0.5 y ~1
+
+      pixels.forEach(p => p.move(volumeFactor));
+
+      for (let i=0; i<pixels.length; i++) {
+        for (let j=i+1; j<pixels.length; j++) {
+          pixels[i].checkCollision(pixels[j]);
+        }
+      }
+
+      updateSurfaces(volumeFactor);
+    }
+  </script>
+</body>
+</html>
